@@ -10,7 +10,7 @@ use syn::{
     bracketed,
     fold::{self, Fold},
     parenthesized,
-    parse::{Parse, ParseStream},
+    parse::{self, Parse, ParseStream},
     parse_quote,
     spanned::Spanned,
     token, Block, Error, Expr, ExprField, FnArg, Ident, ImplItem, ImplItemFn, Index, ItemImpl,
@@ -337,7 +337,7 @@ impl<'a> ReplaceTuplePlaceholder<'a> {
     }
 }
 
-impl<'a> Fold for ReplaceTuplePlaceholder<'a> {
+impl Fold for ReplaceTuplePlaceholder<'_> {
     fn fold_ident(&mut self, ident: Ident) -> Ident {
         if &ident == self.search {
             self.replace.clone()
@@ -441,6 +441,40 @@ impl Parse for ConstExpr {
         }
     }
 }
+#[derive(Default)]
+struct GATLifetime {
+    less_than: Option<syn::Token![<]>,
+    lifetime: Option<syn::Lifetime>,
+    more_then: Option<syn::Token![>]>,
+}
+
+impl GATLifetime {
+    pub fn to_tokens(&self, token_stream: &mut proc_macro2::TokenStream) {
+        self.less_than.to_tokens(token_stream);
+        self.lifetime.to_tokens(token_stream);
+        self.more_then.to_tokens(token_stream);
+    }
+}
+impl Parse for GATLifetime {
+    fn parse(input: ParseStream) -> Result<Self> {
+        if input.peek(syn::Token![=]) {
+            return Ok(Self::default());
+        }
+
+        let less_than = <syn::Token![<]>::parse(input)?;
+        let lifetime = <syn::Lifetime>::parse(input)?;
+
+        if !input.peek(syn::Token![>]) {
+            return Ok(Self::default());
+        }
+
+        Ok(Self {
+            less_than: Some(less_than),
+            lifetime: Some(lifetime),
+            more_then: input.parse()?,
+        })
+    }
+}
 
 /// The `for_tuples!` macro syntax.
 enum ForTuplesMacro {
@@ -448,6 +482,7 @@ enum ForTuplesMacro {
     ItemType {
         type_token: token::Type,
         ident: Ident,
+        lifetime: Option<GATLifetime>,
         equal_token: token::Eq,
         paren_token: token::Paren,
         tuple_repetition: TupleRepetition,
@@ -486,6 +521,7 @@ impl Parse for ForTuplesMacro {
             Ok(ForTuplesMacro::ItemType {
                 type_token: input.parse()?,
                 ident: input.parse()?,
+                lifetime: Some(GATLifetime::parse(input)?),
                 equal_token: input.parse()?,
                 paren_token: parenthesized!(content in input),
                 tuple_repetition: content.call(TupleRepetition::parse_as_type)?,
@@ -578,6 +614,7 @@ impl ForTuplesMacro {
             Self::ItemType {
                 type_token,
                 ident,
+                lifetime,
                 equal_token,
                 paren_token,
                 tuple_repetition,
@@ -590,6 +627,9 @@ impl ForTuplesMacro {
                 match repetition {
                     Ok(rep) => {
                         ident.to_tokens(&mut token_stream);
+                        if let Some(lifetime) = lifetime {
+                            lifetime.to_tokens(&mut token_stream);
+                        }
                         equal_token.to_tokens(&mut token_stream);
                         paren_token.surround(&mut token_stream, |tokens| tokens.extend(rep));
                         semi_token.to_tokens(&mut token_stream);
@@ -796,7 +836,7 @@ impl<'a> ToTupleImplementation<'a> {
     }
 }
 
-impl<'a> Fold for ToTupleImplementation<'a> {
+impl Fold for ToTupleImplementation<'_> {
     fn fold_impl_item(&mut self, i: ImplItem) -> ImplItem {
         match i {
             ImplItem::Macro(macro_item) => match ForTuplesMacro::try_from(&macro_item.mac, true) {
